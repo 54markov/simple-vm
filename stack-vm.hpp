@@ -54,7 +54,7 @@ enum class Opcodes
 /*
  * Condition flags
  */
-enum ConditionFlags
+enum class ConditionFlags
 {
     positive = 1 << 0,
     zero = 1 << 1,
@@ -64,10 +64,23 @@ enum ConditionFlags
 /*
  * Memory Mapped Registers
  */
-enum MemoryMappedRegisters
+enum class MemoryMappedRegisters
 {
     keyboard_status = 0xFE00,
     keyboard_data = 0xFE02
+};
+
+/*
+ * Trap Routines
+ */
+enum class TrapRoutines
+{
+    getc = 0x20,  /* get character from keyboard, not echoed onto the terminal */
+    out = 0x21,   /* output a character */
+    puts = 0x22,  /* output a word string */
+    in = 0x23,    /* get character from keyboard, echoed onto the terminal */
+    putsp = 0x24, /* output a byte string */
+    halt = 0x25   /* halt the program */
 };
 
 class StackVM
@@ -81,7 +94,18 @@ class StackVM
         uint16_t registers_[static_cast<uint16_t>(Register::size)] = { 0 };
 
         void add_(uint16_t instr);
-        // TODO: add additional operations
+        void bit_and_(const uint16_t instr);
+        void bit_not_(const uint16_t instr);
+        void branch_(const uint16_t instr);
+        void jump_(const uint16_t instr);
+        void jump_reg_(const uint16_t instr);
+        void load_(const uint16_t instr);
+        void load_reg_(const uint16_t instr);
+        void load_eaddr_(const uint16_t instr);
+        void store_(const uint16_t instr);
+        void store_i(const uint16_t instr);
+        void store_reg(const uint16_t instr);
+        void trap_(const uint16_t instr);
 
         const uint16_t check_key_();
         void update_flags_(const::Register r);
@@ -104,7 +128,5 @@ class StackVM
         void dump_register(const Register reg);
 };
 
-// implementation
-// support all operations
 // unit tests
 // assembly code generating
