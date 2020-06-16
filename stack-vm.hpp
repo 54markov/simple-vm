@@ -75,12 +75,12 @@ enum class MemoryMappedRegisters
  */
 enum class TrapRoutines
 {
-    getc = 0x20,  /* get character from keyboard, not echoed onto the terminal */
-    out = 0x21,   /* output a character */
-    puts = 0x22,  /* output a word string */
-    in = 0x23,    /* get character from keyboard, echoed onto the terminal */
-    putsp = 0x24, /* output a byte string */
-    halt = 0x25   /* halt the program */
+    getc = 0x20,  // Get character from keyboard, not echoed onto the terminal
+    out = 0x21,   // Output a character
+    puts = 0x22,  // Output a word string
+    in = 0x23,    // Get character from keyboard, echoed onto the terminal
+    putsp = 0x24, // Output a byte string
+    halt = 0x25   // Halt the program
 };
 
 class StackVM
@@ -92,19 +92,21 @@ class StackVM
         */
         uint16_t memory_[UINT16_MAX] = { 0 };
         uint16_t registers_[static_cast<uint16_t>(Register::size)] = { 0 };
+        bool running_ = true;
 
-        void add_(uint16_t instr);
-        void bit_and_(const uint16_t instr);
-        void bit_not_(const uint16_t instr);
         void branch_(const uint16_t instr);
-        void jump_(const uint16_t instr);
-        void jump_reg_(const uint16_t instr);
+        void add_(const uint16_t instr);
         void load_(const uint16_t instr);
-        void load_reg_(const uint16_t instr);
-        void load_eaddr_(const uint16_t instr);
         void store_(const uint16_t instr);
-        void store_i(const uint16_t instr);
-        void store_reg(const uint16_t instr);
+        void jump_reg_(const uint16_t instr);
+        void bit_and_(const uint16_t instr);
+        void load_reg_(const uint16_t instr);
+        void store_reg_(const uint16_t instr);
+        void bit_not_(const uint16_t instr);
+        void load_i_(const uint16_t instr);
+        void store_i_(const uint16_t instr);
+        void jump_(const uint16_t instr);
+        void load_eaddr_(const uint16_t instr);
         void trap_(const uint16_t instr);
 
         const uint16_t check_key_();
@@ -112,13 +114,14 @@ class StackVM
         const uint16_t sign_extend_(const uint16_t x, const int bit_count);
 
     public:
-        StackVM(/* args */);
+        StackVM() = default;
         ~StackVM() = default;
 
-        void load_image(/*ARGS*/);
+        void load_image(const char* path);
 
+        const bool is_running();
         const uint16_t fetch();
-        const uint16_t execute(const uint16_t instr);
+        const void execute(const uint16_t instr);
 
         void mem_write(const uint16_t address, const uint16_t value);
         const uint16_t mem_read(const uint16_t address);

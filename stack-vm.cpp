@@ -2,62 +2,119 @@
 
 #include <string>
 
-
-StackVM::StackVM()
+static uint16_t swap16(uint16_t x)
 {
-    this->registers_[1] = 0x5;
-    this->registers_[2] = 0x6;
-    ;
+    return (x << 8) | (x >> 8);
 }
 
-void StackVM::load_image(/*ARGS*/)
+void StackVM::load_image(const char* path)
 {
-    return; // TODO
+    // TODO: c++ binary reading
+
+    FILE* file = ::fopen(path, "rb");
+    if (!file)
+    {
+        throw std::string("can't open file");
+    }
+
+    // The origin tells us where in memory to place the image
+    uint16_t origin = 0;
+    if (::fread(&origin, sizeof(origin), 1, file) != 1)
+    {
+        ::fclose(file);
+        throw std::string("can't read file");
+    }
+    origin = swap16(origin);
+
+    // We know the maximum file size so we only need one fread
+    uint16_t max_read = UINT16_MAX - origin;
+    uint16_t* p = this->memory_ + origin;
+    size_t read = ::fread(p, sizeof(uint16_t), max_read, file);
+
+    // Swap to little endian
+    while (read-- > 0)
+    {
+        *p = swap16(*p);
+        ++p;
+    }
+
+    ::fclose(file);
+}
+
+const bool StackVM::is_running()
+{
+    return this->running_;
 }
 
 const uint16_t StackVM::fetch()
 {
     const auto pc = this->registers_[static_cast<uint16_t>(Register::pc)]++;
-    if (pc > UINT16_MAX)
-    {
-        throw std::string("overflow program counter");
-    }
-
     return this->mem_read(pc);
 }
 
-const uint16_t StackVM::execute(const uint16_t instr)
+const void StackVM::execute(const uint16_t instr)
 {
-    uint16_t opcode = instr >> 12;
-    switch (Opcodes(opcode))
+    switch (Opcodes(instr >> 12))
     {
+        case Opcodes::branch:
+            this->branch_(instr);
+            break;
         case Opcodes::add:
             this->add_(instr);
+            break;
+        case Opcodes::load:
+            this->load_(instr);
+            break;
+        case Opcodes::store:
+            this->store_(instr);
+            break;
+        case Opcodes::jump_reg:
+            this->jump_reg_(instr);
+            break;
+        case Opcodes::bit_and:
+            this->bit_and_(instr);
+            break;
+        case Opcodes::load_reg:
+            this->load_reg_(instr);
+            break;
+        case Opcodes::store_reg:
+            this->store_reg_(instr);
+            break;
+        case Opcodes::rti: // unused
+            break;
+        case Opcodes::bit_not:
+            this->bit_not_(instr);
+            break;
+        case Opcodes::load_i:
+            this->load_i_(instr);
+            break;
+        case Opcodes::store_i:
+            this->store_i_(instr);
+            break;
+        case Opcodes::jump:
+            this->jump_(instr);
+            break;
+        case Opcodes::reserved:
+            break;
+        case Opcodes::load_eaddr:
+            this->load_eaddr_(instr);
+            break;
+        case Opcodes::trap:
+            this->trap_(instr);
             break;
         default:
             throw std::string("bad opcode");
             break;
     }
-    return 0; // TODO
 }
 
 void StackVM::mem_write(const uint16_t address, const uint16_t value)
 {
-    if (address > UINT16_MAX)
-    {
-        throw std::string("write: invalid memory address");
-    }
-
     this->memory_[address] = value;
 }
 
 const uint16_t StackVM::mem_read(const uint16_t address)
 {
-    if (address > UINT16_MAX)
-    {
-        throw std::string("read: invalid memory address");
-    }
-
     if (address == static_cast<uint16_t>(MemoryMappedRegisters::keyboard_status))
     {
         if (this->check_key_())
@@ -73,7 +130,6 @@ const uint16_t StackVM::mem_read(const uint16_t address)
 
     return this->memory_[address];
 }
-
 
 void StackVM::dump_memory()
 {
@@ -127,10 +183,21 @@ void StackVM::dump_register(const Register reg)
             reg_str = "COND";
             break;
         default:
-            std::cerr << "unkown register " << static_cast<uint16_t>(reg) << std::endl;
+            std::cerr << "unknown register " << static_cast<uint16_t>(reg) << std::endl;
             break;
     }
     std::cout << reg_str << ": 0x" << this->registers_[static_cast<uint16_t>(reg)] << std::endl;
+}
+
+void StackVM::branch_(const uint16_t instr)
+{
+    uint16_t pc_offset = this->sign_extend_((instr) & 0x1ff, 9);
+    uint16_t cond_flag = (instr >> 9) & 0x7;
+
+    if (cond_flag & this->registers_[static_cast<uint16_t>(Register::cond)])
+    {
+        this->registers_[static_cast<uint16_t>(Register::pc)] += pc_offset;
+    }
 }
 
 void StackVM::add_(const uint16_t instr)
@@ -170,6 +237,40 @@ void StackVM::add_(const uint16_t instr)
     this->update_flags_(static_cast<Register>(r0));
 }
 
+void StackVM::load_(const uint16_t instr)
+{
+    uint16_t r0 = (instr >> 9) & 0x7;
+    uint16_t pc_offset = this->sign_extend_(instr & 0x1FF, 9);
+
+    this->registers_[r0] = this->mem_read(this->registers_[static_cast<uint16_t>(Register::pc)] + pc_offset);
+    this->update_flags_(static_cast<Register>(r0));
+}
+
+void StackVM::store_(const uint16_t instr)
+{
+    uint16_t r0 = (instr >> 9) & 0x7;
+    uint16_t pc_offset = this->sign_extend_(instr & 0x1FF, 9);
+
+    this->mem_write(this->registers_[static_cast<uint16_t>(Register::pc)] + pc_offset, this->registers_[r0]);
+}
+
+void StackVM::jump_reg_(const uint16_t instr)
+{
+    uint16_t long_flag = (instr >> 11) & 1;
+    this->registers_[static_cast<uint16_t>(Register::r7)] = this->registers_[static_cast<uint16_t>(Register::pc)];
+
+    if (long_flag)
+    {
+        uint16_t long_pc_offset = this->sign_extend_(instr & 0x7FF, 11);
+        this->registers_[static_cast<uint16_t>(Register::pc)] += long_pc_offset; // JSR
+    }
+    else
+    {
+        uint16_t r1 = (instr >> 6) & 0x7;
+        this->registers_[static_cast<uint16_t>(Register::pc)] = this->registers_[r1]; // JSRR
+    }
+}
+
 void StackVM::bit_and_(const uint16_t instr)
 {
     uint16_t r0 = (instr >> 9) & 0x7;
@@ -186,7 +287,28 @@ void StackVM::bit_and_(const uint16_t instr)
         uint16_t r2 = instr & 0x7;
         this->registers_[r0] = this->registers_[r1] & this->registers_[r2];
     }
+
     this->update_flags_(static_cast<Register>(r0));
+}
+
+void StackVM::load_reg_(const uint16_t instr)
+{
+    uint16_t r0 = (instr >> 9) & 0x7;
+    uint16_t r1 = (instr >> 6) & 0x7;
+
+    uint16_t offset = this->sign_extend_(instr & 0x3F, 6);
+    this->registers_[r0] = this->mem_read(this->registers_[r1] + offset);
+
+    this->update_flags_(static_cast<Register>(r0));
+}
+
+void StackVM::store_reg_(const uint16_t instr)
+{
+    uint16_t r0 = (instr >> 9) & 0x7;
+    uint16_t r1 = (instr >> 6) & 0x7;
+
+    uint16_t offset = this->sign_extend_(instr & 0x3F, 6);
+    this->mem_write(this->registers_[r1] + offset, this->registers_[r0]);
 }
 
 void StackVM::bit_not_(const uint16_t instr)
@@ -198,76 +320,17 @@ void StackVM::bit_not_(const uint16_t instr)
     this->update_flags_(static_cast<Register>(r0));
 }
 
-void StackVM::branch_(const uint16_t instr)
+void StackVM::load_i_(const uint16_t instr)
 {
-    uint16_t pc_offset = this->sign_extend_((instr) & 0x1ff, 9);
-    uint16_t cond_flag = (instr >> 9) & 0x7;
+    uint16_t r0 = (instr >> 9) & 0x7;                          // Destination register (DR)
+    uint16_t pc_offset = this->sign_extend_(instr & 0x1FF, 9); // PCoffset 9
+    // Add pc_offset to the current PC, look at that memory location to get the final address
+    this->registers_[r0] = this->mem_read(this->mem_read(this->registers_[static_cast<uint16_t>(Register::pc)] + pc_offset));
 
-    if (cond_flag & this->registers_[static_cast<uint16_t>(Register::cond)])
-    {
-        this->registers_[static_cast<uint16_t>(Register::pc)] += pc_offset;
-    }
-}
-
-void StackVM::jump_(const uint16_t instr)
-{
-    /* Also handles RET */
-    uint16_t r1 = (instr >> 6) & 0x7;
-    this->registers_[static_cast<uint16_t>(Register::pc)] = this->registers_[r1];
-}
-
-void StackVM::jump_reg_(const uint16_t instr)
-{
-    uint16_t long_flag = (instr >> 11) & 1;
-    this->registers_[static_cast<uint16_t>(Register::r7)] = this->registers_[static_cast<uint16_t>(Register::pc)];
-
-    if (long_flag)
-    {
-        uint16_t long_pc_offset = this->sign_extend_(instr & 0x7FF, 11);
-        this->registers_[static_cast<uint16_t>(Register::pc)] += long_pc_offset;  /* JSR */
-    }
-    else
-    {
-        uint16_t r1 = (instr >> 6) & 0x7;
-        this->registers_[static_cast<uint16_t>(Register::pc)] = this->registers_[r1]; /* JSRR */
-    }
-}
-
-void StackVM::load_(const uint16_t instr)
-{
-    uint16_t r0 = (instr >> 9) & 0x7;
-    uint16_t pc_offset = this->sign_extend_(instr & 0x1FF, 9);
-    this->registers_[r0] = this->mem_read(this->registers_[static_cast<uint16_t>(Register::pc)] + pc_offset);
     this->update_flags_(static_cast<Register>(r0));
 }
 
-void StackVM::load_reg_(const uint16_t instr)
-{
-    uint16_t r0 = (instr >> 9) & 0x7;
-    uint16_t r1 = (instr >> 6) & 0x7;
-
-    uint16_t offset = this->sign_extend_(instr & 0x3F, 6);
-    this->registers_[r0] = this->mem_read(this->registers_[r1] + offset);
-    this->update_flags_(static_cast<Register>(r0));
-}
-
-void StackVM::load_eaddr_(const uint16_t instr)
-{
-    uint16_t r0 = (instr >> 9) & 0x7;
-    uint16_t pc_offset = this->sign_extend_(instr & 0x1FF, 9);
-    this->registers_[r0] = this->registers_[static_cast<uint16_t>(Register::pc)] + pc_offset;
-    this->update_flags_(static_cast<Register>(r0));
-}
-
-void StackVM::store_(const uint16_t instr)
-{
-    uint16_t r0 = (instr >> 9) & 0x7;
-    uint16_t pc_offset = this->sign_extend_(instr & 0x1FF, 9);
-
-    this->mem_write(this->registers_[static_cast<uint16_t>(Register::pc)] + pc_offset, this->registers_[r0]);
-}
-
-void StackVM::store_i(const uint16_t instr)
+void StackVM::store_i_(const uint16_t instr)
 {
     uint16_t r0 = (instr >> 9) & 0x7;
     uint16_t pc_offset = this->sign_extend_(instr & 0x1FF, 9);
@@ -275,12 +338,20 @@ void StackVM::store_i(const uint16_t instr)
     this->mem_write(this->mem_read(this->registers_[static_cast<uint16_t>(Register::pc)] + pc_offset), this->registers_[r0]);
 }
 
-void StackVM::store_reg(const uint16_t instr)
+void StackVM::jump_(const uint16_t instr)
+{
+    // Also handles RET
+    uint16_t r1 = (instr >> 6) & 0x7;
+    this->registers_[static_cast<uint16_t>(Register::pc)] = this->registers_[r1];
+}
+
+void StackVM::load_eaddr_(const uint16_t instr)
 {
     uint16_t r0 = (instr >> 9) & 0x7;
-    uint16_t r1 = (instr >> 6) & 0x7;
-    uint16_t offset = this->sign_extend_(instr & 0x3F, 6);
-    this->mem_write(this->registers_[r1] + offset, this->registers_[r0]);
+    uint16_t pc_offset = this->sign_extend_(instr & 0x1FF, 9);
+    this->registers_[r0] = this->registers_[static_cast<uint16_t>(Register::pc)] + pc_offset;
+
+    this->update_flags_(static_cast<Register>(r0));
 }
 
 void StackVM::trap_(const uint16_t instr)
@@ -289,22 +360,19 @@ void StackVM::trap_(const uint16_t instr)
     {
         case TrapRoutines::getc:
         {
-            /* TRAP GETC */
-            /* read a single ASCII char */
-            this->registers_[static_cast<uint16_t>(Register::r0)] = (uint16_t)getchar();
+            // Read a single ASCII char
+            this->registers_[static_cast<uint16_t>(Register::r0)] = (uint16_t)::getchar();
             break;
         }
         case TrapRoutines::out:
         {
-            /* TRAP OUT */
             ::putc((char)this->registers_[static_cast<uint16_t>(Register::r0)], stdout);
             ::fflush(stdout);
             break;
         }
         case TrapRoutines::puts:
         {
-            /* TRAP PUTS */
-            /* one char per word */
+            // One char per word
             uint16_t* c = this->memory_ + this->registers_[static_cast<uint16_t>(Register::r0)];
             while (*c)
             {
@@ -316,33 +384,31 @@ void StackVM::trap_(const uint16_t instr)
         }
         case TrapRoutines::in:
         {
-            /* TRAP IN */
-            printf("Enter a character: ");
+            std::cout << "Enter a character: ";
             this->registers_[static_cast<uint16_t>(Register::r0)] = (uint16_t)getchar();
             break;
         }
         case TrapRoutines::putsp:
         {
-            /* TRAP PUTSP */
-            /* one char per byte (two bytes per word)
-              here we need to swap back to big endian format
-            */
+            // One char per byte (two bytes per word) here we need to swap back to big endian format
             uint16_t* c = this->memory_ + this->registers_[static_cast<uint16_t>(Register::r0)];
             while (*c)
             {
                 char char1 = (*c) & 0xFF;
                 ::putc(char1, stdout);
                 char char2 = (*c) >> 8;
-                if (char2) putc(char2, stdout);
+                if (char2)
+                {
+                    ::putc(char2, stdout);
+                }
                 ++c;
             }
             ::fflush(stdout);
             break;
         }
         case TrapRoutines::halt:
-            /* TRAP HALT */
-            ::puts("HALT");
-            ::fflush(stdout);
+            std::cout << "Halt" << std::endl;
+            this->running_ = false;
             break;
         }
 }
@@ -366,7 +432,7 @@ void StackVM::update_flags_(const::Register r)
     {
         this->registers_[static_cast<uint16_t>(Register::cond)] = static_cast<uint16_t>(ConditionFlags::zero);
     }
-    else if (this->registers_[static_cast<uint16_t>(r)] >> 15) /* a 1 in the left-most bit indicates negative */
+    else if (this->registers_[static_cast<uint16_t>(r)] >> 15) // a 1 in the left-most bit indicates negative
     {
         this->registers_[static_cast<uint16_t>(Register::cond)] = static_cast<uint16_t>(ConditionFlags::negative);
     }
@@ -381,5 +447,6 @@ const uint16_t StackVM::sign_extend_(const uint16_t x, const int bit_count)
     if ((x >> (bit_count - 1)) & 1) {
         return x | (0xFFFF << bit_count);
     }
+
     return x;
 }
